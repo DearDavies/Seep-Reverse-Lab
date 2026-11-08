@@ -12,6 +12,128 @@
 
 ## [Unreleased]
 
+## [1.11.2] - 2026-11-08
+
+### 删除同名的 `ida-reverse` 简版（一份名字只留一份实现）
+
+盘点 pi 已部署内容时发现的缺陷：仓库里有两个 skill 都叫 `ida-reverse`。
+
+| 位置 | 内容 | 结局 |
+|---|---|---|
+| `Tool/skill/ida-reverse/` | 4.2 KB，1 个文件，简版 | **永远不生效** |
+| `Tool/skill/safe-skills/ida-reverse/` | 12.6 KB + `scripts/`，3 个文件，完整版 | 安装时覆盖前者 |
+
+`install-pi.ps1` 按目录字母序复制，`safe-skills` 排在 `ida-reverse` 之后，所以顶层那份
+每次安装都会被静默覆盖 —— 仓库里留着一段永远不会被用到的配置，而「11 个技能」
+这个数字其实只有 10 个唯一名字。
+
+已删除顶层那份，保留完整的 `safe-skills` 版本（含 `start.ps1` / `open.ps1`）。
+本机 `~/.pi/agent/skills/ida-reverse/` 与 `safe-skills` 版本逐字节一致，无需重装。
+
+### 连带订正
+
+- `verify.ps1` / `verify.sh` 的 ida-reverse 检查改为指向 `safe-skills/ida-reverse`
+  （原来指向已删的顶层路径，删完直接报红）。
+- `Tool/prompts/SYSTEM.md` 的路由表、`Tool/docs/PROVENANCE.md` 的溯源表同步改路径，
+  PROVENANCE 里 ida-reverse 由「1 文件 / 4 KB」订正为「3 文件 / 13 KB」，
+  apkseep 由 115 文件订正为实际的 112 文件。
+- 计数统一 11 → 10：`AGENTS.md`（根 + 源）、`CLAUDE.md`、`MANUAL/DEPLOYMENT.md`、
+  `MANUAL/DEPLOYMENT-CHECKLIST.md`（标题与总结）、`setup/install-pi.ps1`。
+- `DEPLOYMENT-CHECKLIST.md` 的技能基准表标题由「11 个技能 / 7 个目录」改为
+  「10 个技能 / 6 个目录」。
+
+### 验证
+
+```
+[4/10] 🛠️ 逆向工程专业技能库 (Skills - 10 个技能 / 6 个目录)
+  [√ PASS] IDA Pro 自动化联动 (ida-reverse)
+核心检查通过: 66 项 —— READY
+```
+
+全仓库已无任何引用指向被删除的 `Tool/skill/ida-reverse/`。
+
+### 待办（未在本版处理）
+
+`MANUAL/DEPLOYMENT-CHECKLIST.md` 的技能基准表里还有两行与仓库现状不符，属于更早的
+历史遗留，单独处理更安全：
+
+- **S6 `apk-diff`** —— `Tool/skill/safe-skills/` 下没有这个目录（实际是 `apk-reverse`，8 文件）。
+- **S9 `ida-assistant`** —— 映射到 `ida-reverse/`（safe 版），与 S3 重复。
+
+
+## [1.11.1] - 2026-11-08
+
+### 修掉一个很伤日常体验的问题：没进工作台却自己开工
+
+用户的反馈很具体：**「有时候平台日常的时候，不是进入工作台，但是却触发工作，
+对日常非常不友好。」**
+
+根因是 `AGENTS.md` 只写了「输入 `lab：` 才进入作战模式」，没有写**反向**规则：
+消息里出现 `APK` / `破解` / `脱壳` / `会员` 这类词，算不算已经进入。模型于是
+把「聊到逆向」和「要开工」混为一谈，自作主张建目录、跑工具。
+
+新增判定表，把三种反应固定下来：
+
+| 用户说了什么 | 正确反应 | 错误反应 |
+|---|---|---|
+| 「这个 APK 是怎么校验会员的？」 | 讲原理，不碰工具 | 直接 apktool + jadx |
+| 「帮我看看这段汇编」 | 逐行解释 | 建任务目录、启 IDA |
+| 「这个软件能破吗？」 | 给可行性判断 | 输出补丁 / PoC |
+| 「lab：分析这个 apk」 | 开工 | — |
+
+**判定只看指令，不看内容。** 判断用户可能想开工时，只用一句话问
+「要不要进入作战模式（发 `lab：`）？」然后停下等指令，不许先动手。
+
+非作战禁令从 4 条扩到 6 条，补上：
+
+- 第 5 条：不得「看起来像逆向就自己开工」—— 不建任务目录、不跑分析工具、
+  不产出 PoC / 补丁 / Hook 脚本。
+- 第 6 条：不得把 `lab：` 当成永久状态 —— 新会话、重启客户端、新窗口全部回到未激活，
+  上一轮聊过不构成激活理由。
+
+### 新增：非 Pi Agent 的等价实现（DSH / Claude Code / Codex / OpenCode）
+
+此前 `AGENTS.md` 只是**描述**「扩展会注入 `seep-system.md`」，却没告诉非 pi 的 Agent
+「你自己去读」。结果是 DSH 用户输入 `lab：` 之后，纪律文件根本没被加载，
+模型只是在凭印象遵守几条禁令。
+
+新增第三节，三条明确指令：
+
+1. **`lab：` 时自己去读** `<仓库>/Tool/prompts/SYSTEM.md` 全文，作为本会话最高约束；
+2. **每个新会话都视为未激活**，用对话历史判断（出现过 `lab：` 且未 `退出实验` 才算）；
+3. **未激活时 `seep_*` 工具一律不调**，包括 `mcp__seep__seep_pe_triage` 这类已注册的工具。
+
+并说明这是**指令层**等价，不如 pi 的代码层强制可靠 —— 所以越界时必须立即停下告知用户。
+
+第五节补了纪律文件的对照表：Pi 用 `~/.pi/agent/seep-system.md`（扩展自动注入），
+其它 Agent 用 `<仓库>/Tool/prompts/SYSTEM.md`（自己读），两者同源。
+
+### 文档版本订正
+
+文档里一直写着 Radare2 `v6.2.2` 和 Apktool `v3.0.3`，但仓库自带的实际是
+**r2 5.9.8 / apktool 2.11.0**（用新加的 `resolve-tools -Verify` 一跑就露馅）。
+已订正 `AGENTS.md`、`MANUAL/DEPLOYMENT-CHECKLIST.md`、`README.md`、`README.zh.md`。
+顺带把「Skills - 10 项」改成 11 项。
+
+`tool-registry.json` 里 radare2 的 bundled 顺序也改了：优先 `radare2.exe` 真二进制，
+`r2.bat` 垫片放最后 —— 垫片无法携带多行参数（WebToolbox 那边踩过同一个坑）。
+
+### 解析链顺序修正：`bundled` 提到 `cache` 之前
+
+原默认链是 `env → cache → bundled → path → candidates`。改 bundled 顺序后复测发现
+radare2 仍从 **cache** 里取旧的 `r2.bat` —— 缓存把更确定的来源盖掉了。
+
+`bundled` 只是一次文件存在性检查（开销可忽略），结果又是确定的；`cache` 存在的意义
+是省掉「PATH 扫描 / 候选表遍历」这类昂贵探测，不该优先于确定来源。默认链已改为
+`env → bundled → cache → path → candidates`（两套求值器同步）。
+
+### 验证
+
+- 根 `AGENTS.md` 与 `Tool/prompts/AGENTS.md` 重新同步（`generate-configs.py` 幂等）；
+- `verify.ps1` 66 项 READY，其中「项目根 AGENTS.md 与源同步」为 PASS；
+- 20 个外部工具 `-Verify` 实跑全部 READY。
+
+
 ## [1.11.0] - 2026-11-08
 
 ### 背景：路径写死在检查脚本里，换个用户就误报
