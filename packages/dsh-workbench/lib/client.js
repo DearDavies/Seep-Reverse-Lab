@@ -122,33 +122,32 @@ window.__ModuleLoader__.load({
         padding: '8px 0 8px 24px',
         borderBottom: '0.5px solid var(--dsw-alias-border-l1)',
       },
-      quickBtn: {
+      // Lab 开关按钮：灰=未进入，绿=已进入。就这一个控件，不再有弹窗。
+      labBtn: {
         display: 'flex',
         alignItems: 'center',
         gap: 6,
         height: 28,
-        padding: '0 10px',
+        padding: '0 11px',
         fontSize: 12.5,
+        fontWeight: 500,
         borderRadius: 14,
         cursor: 'pointer',
-        border: '0.5px solid var(--dsw-alias-border-l3)',
-        background: 'transparent',
-        color: 'var(--dsw-alias-label-secondary)',
         flex: 'none',
         whiteSpace: 'nowrap',
+        transition: 'background .15s, color .15s, border-color .15s',
       },
-      popover: {
-        position: 'fixed',
-        right: 24,
-        bottom: 96,
-        width: 380,
-        zIndex: 2147483000,
-        padding: 14,
-        borderRadius: 12,
-        border: '0.5px solid var(--dsw-alias-border-l2)',
-        background: 'var(--dsw-alias-bg-layer-0)',
-        boxShadow: '0 8px 32px rgba(0,0,0,.18)',
+      labBtnOff: {
+        border: '0.5px solid var(--dsw-alias-border-l3, rgba(0,0,0,.18))',
+        background: 'transparent',
+        color: 'var(--dsw-alias-label-secondary, #666)',
       },
+      labBtnOn: {
+        border: '0.5px solid transparent',
+        background: 'var(--dsw-alias-state-success-primary, #1a9e5c)',
+        color: '#fff',
+      },
+      labBtnBusy: { opacity: 0.6, cursor: 'default' },
       iconBtn: {
         border: 'none',
         background: 'transparent',
@@ -739,174 +738,88 @@ window.__ModuleLoader__.load({
     // 为什么要有：设置面板要点三层才到（更多 → 设置 → Seep 工作台），
     // 平时只想瞄一眼「接上了没」的时候太绕。这个入口贴在输入框右侧，
     // 一点就出小卡片；完整面板仍然在设置里。
-    function makeQuickEntry(ctx) {
-      return function QuickEntry() {
-        const [open, setOpen] = React.useState(false);
-        const [status, setStatus] = React.useState(null);
+    /**
+     * 输入框右侧的 Lab 开关。
+     *
+     * 为什么不再做弹窗：弹窗里能做的只有「进入/退出 lab」一件事，
+     * 其余详情（改路径、工具清单、一键更新）本来就只能去设置里看。
+     * 那就把那一件事直接做成按钮本身：
+     *   灰 = 未进入，点一下进；绿 = 已进入，再点退出。
+     *
+     * 只在内存里生效（会话级），不动磁盘、不重启。
+     */
+    function makeLabToggle() {
+      return function LabToggle() {
+        const [lab, setLab] = React.useState(null);
         const [busy, setBusy] = React.useState(false);
-        const [error, setError] = React.useState('');
+        const [err, setErr] = React.useState('');
 
-        const load = React.useCallback(async () => {
-          setBusy(true);
-          setError('');
-          try {
-            setStatus(await fetchStatus(false));
-          } catch (e) {
-            setError(e && e.message ? e.message : '接口没响应');
-          } finally {
-            setBusy(false);
-          }
+        // 挂上来先问一次当前状态：这样刷新页面后按钮颜色是对的
+        React.useEffect(() => {
+          let alive = true;
+          fetchStatus(false)
+            .then((st) => { if (alive && st && st.lab) setLab(st.lab); })
+            .catch(() => { /* 读不到就先当未进入，点的时候会再报 */ });
+          return () => { alive = false; };
         }, []);
 
-        // 一进来就读一次：小圆点要在没点开的时候也有意义（绿=就绪，黄=有缺，红=没接上）
-        React.useEffect(() => {
-          if (!status) void load();
-        }, [status, load]);
+        const on = Boolean(lab && lab.injecting);
 
-        // 开关只改内存状态：关掉立刻停止注入，打开下一条消息就带上纪律，不用重启。
-        const toggleLab = async (on) => {
+        const toggle = async () => {
+          if (busy) return;
           setBusy(true);
-          setError('');
+          setErr('');
+          const next = !on;
           try {
             const res = await fetch(API, {
               method: 'POST',
               headers: { 'content-type': 'application/json' },
               credentials: 'same-origin',
-              body: JSON.stringify({ action: 'lab', active: on, enabled: true }),
+              body: JSON.stringify({ action: 'lab', active: next, enabled: true }),
             });
             const payload = await res.json();
             if (!payload.ok) {
-              setError(payload.error || '切换失败');
-            } else if (status) {
-              setStatus({ ...status, lab: payload.lab });
+              setErr(payload.error || '切换失败');
+            } else {
+              setLab(payload.lab);
             }
           } catch (e) {
-            setError(e && e.message ? e.message : '切换失败');
+            setErr(e && e.message ? e.message : '切换失败');
           } finally {
             setBusy(false);
           }
         };
 
-        const tools = (status && status.tools) ? Object.values(status.tools) : [];
-        const missing = tools.filter((t) => t.state === 'MISSING');
-        const ready = tools.filter((t) => t.state === 'READY').length;
-        const ok = status && status.ok;
-
-        const dot = !status ? '#9aa0a6' : ok && missing.length === 0 ? '#1a9e5c' : ok ? '#c9a227' : '#d33a3a';
-
-        // 浮层挂到 body：输入区有 overflow/transform，留在原地会被裁掉。
-        const popover = open && ReactDOM.createPortal(
-          h(
-            'div',
-            {
-              style: S.popover,
-              onMouseDown: (e) => e.stopPropagation(),
-            },
-            h(
-              'div',
-              { style: { display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 } },
-              h('span', { style: { width: 8, height: 8, borderRadius: 4, background: dot, flex: 'none' } }),
-              h('span', { style: { fontSize: 13, fontWeight: 600 } }, 'Seep 工作台'),
-              h('span', {
-                style: { marginLeft: 'auto', fontSize: 12, color: 'var(--dsw-alias-label-tertiary)' },
-              }, ok ? '就绪' : '未就绪'),
-              h('button', { style: S.iconBtn, onClick: () => setOpen(false), title: '收起' }, '×'),
-            ),
-            status && status.lab
-              ? h(
-                  'div',
-                  {
-                    style: {
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 8,
-                      padding: '8px 10px',
-                      marginBottom: 10,
-                      borderRadius: 8,
-                      background: 'var(--dsw-alias-bg-layer-1)',
-                      border: '0.5px solid var(--dsw-alias-border-l1)',
-                    },
-                  },
-                  h('span', { style: { fontSize: 12.5, fontWeight: 600 } }, 'Lab 工作台模式'),
-                  h('span', {
-                    style: { fontSize: 11.5, color: 'var(--dsw-alias-label-tertiary)' },
-                  }, status.lab.injecting ? '已进入' : '未进入'),
-                  h('span', { style: { marginLeft: 'auto' } }),
-                  h('button', {
-                    style: status.lab.injecting ? S.btnSmallPrimary : S.btnSmall,
-                    disabled: busy,
-                    title: '只影响当前 DSH 进程，关掉就不注入任何作战纪律',
-                    onClick: () => void toggleLab(!status.lab.injecting),
-                  }, status.lab.injecting ? '关闭' : '开启'),
-                )
-              : null,
-            status && status.lab && status.lab.lastRewrite
-              ? h(
-                  'div',
-                  {
-                    style: {
-                      fontSize: 11.5,
-                      lineHeight: '17px',
-                      padding: '8px 10px',
-                      marginBottom: 10,
-                      borderRadius: 8,
-                      border: '0.5px dashed var(--dsw-alias-border-l2)',
-                      color: 'var(--dsw-alias-label-secondary)',
-                      wordBreak: 'break-all',
-                    },
-                  },
-                  h('div', { style: { fontWeight: 600, marginBottom: 4 } }, '最近一次改写（界面里看不到，发给模型的是这份）'),
-                  h('div', null, '原：', status.lab.lastRewrite.before),
-                  h('div', null, '改：', status.lab.lastRewrite.after),
-                )
-              : null,
-            error
-              ? h('p', { style: S.err }, error)
-              : status
-                ? h(
-                    'div',
-                    { style: { display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12.5 } },
-                    h('div', { style: S.kv }, h('span', { style: S.k }, '版本'), h('span', { style: S.v }, status.version || '-')),
-                    h('div', { style: S.kv }, h('span', { style: S.k }, '已接线'), h('span', { style: S.v }, status.wired || '-')),
-                    h('div', { style: S.kv }, h('span', { style: S.k }, 'lab 开关'), h('span', { style: S.v }, status.labGate ? '已启用' : '已关闭')),
-                    h('div', { style: S.kv }, h('span', { style: S.k }, '工具'), h('span', { style: S.v }, `${ready} 就绪${missing.length ? ` / ${missing.length} 缺失：${missing.map((m) => m.id).join(', ')}` : ''}`)),
-                    h('div', { style: { ...S.kv, alignItems: 'flex-start' } }, h('span', { style: S.k }, '仓库'), h('span', { style: { ...S.v, wordBreak: 'break-all' } }, status.repoRoot || '-')),
-                  )
-                : h('p', { style: S.hint }, busy ? '正在读状态…' : '还没读到状态'),
-
-            h(
-              'div',
-              { style: { display: 'flex', gap: 8, marginTop: 10 } },
-              h('button', { style: S.btnSmall, disabled: busy, onClick: () => void load() }, busy ? '检查中…' : '重新检查'),
-              h('button', {
-                style: S.btnSmall,
-                onClick: () => {
-                  const root = (status && status.repoRoot) || '<仓库路径>';
-                  void navigator.clipboard?.writeText(`cd "${root}"
-python setup/verify-dsh.py`);
-                },
-              }, '复制校验命令'),
-            ),
-            h('p', { style: { ...S.hint, marginTop: 8 } },
-              '完整面板：设置 → Seep 工作台（改路径、看全部 20 个工具、指定工具路径）'),
-          ),
-          document.body,
-        );
+        const title = err
+          ? `切换失败：${err}`
+          : on
+            ? 'Lab 模式进行中，点一下退出（只影响当前会话）'
+            : '点一下进入 Lab 模式：注入作战纪律 + 敏感词改写（只影响当前会话）';
 
         return h(
-          React.Fragment,
-          null,
-          h(
-            'button',
-            {
-              style: S.quickBtn,
-              title: 'Seep 工作台状态',
-              onClick: () => setOpen((v) => !v),
+          'button',
+          {
+            style: {
+              ...S.labBtn,
+              ...(on ? S.labBtnOn : S.labBtnOff),
+              ...(busy ? S.labBtnBusy : null),
             },
-            h('span', { style: { width: 7, height: 7, borderRadius: 4, background: dot, flex: 'none' } }),
-            'Seep',
-          ),
-          popover,
+            title,
+            onClick: () => void toggle(),
+            'aria-pressed': on ? 'true' : 'false',
+          },
+          h('span', {
+            style: {
+              width: 7,
+              height: 7,
+              borderRadius: 4,
+              flex: 'none',
+              background: on ? '#fff' : 'currentColor',
+              opacity: on ? 1 : 0.5,
+            },
+          }),
+          // 文案永远只有「Lab」一个词，状态全交给颜色：灰=未进入，绿=已进入
+          'Lab',
         );
       };
     }
@@ -934,20 +847,13 @@ python setup/verify-dsh.py`);
         ),
       );
 
-      // 入口〇：小按钮，两处都放同一个组件
-      //   · conversation.hero.options —— 新会话时输入框上方那一行（工作区 / 标准模式 旁边）
-      //   · conversation.input.right —— 有对话时输入框右侧（上面那行只在空会话出现）
-      const QuickEntry = makeQuickEntry(ctx);
-      ctx.slots.inject('conversation.hero.options', () =>
-        ctx.slots.register(
-          { name: 'conversation.hero.options', id: `${NS}-hero`, order: 20 },
-          QuickEntry,
-        ),
-      );
+      // 入口〇：输入框右侧的 Lab 开关（模型选择器左边）。
+      // 只挂这一处：曾经也挂过 conversation.hero.options，结果页面上出现两个按钮。
+      const LabToggle = makeLabToggle();
       ctx.slots.inject('conversation.input.right', () =>
         ctx.slots.register(
-          { name: 'conversation.input.right', id: `${NS}-quick`, order: 20 },
-          QuickEntry,
+          { name: 'conversation.input.right', id: `${NS}-lab`, order: 20 },
+          LabToggle,
         ),
       );
 
