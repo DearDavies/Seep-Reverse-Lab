@@ -1,3 +1,5 @@
+> **First time here? Read [INSTALL.md](INSTALL.md) first** — it spells out what to install for Pi Agent vs. DeepSeek Harness (they are two different frameworks).
+
 <p align="center">
   <img src="app_logo.svg" alt="Seep Reverse Lab Logo" width="120" height="120">
 </p>
@@ -64,7 +66,7 @@ Users provide plain-language technical goals; the agent autonomously performs pl
 | 🧠 **Agent Decision Drift** | `softseep` orchestrator: two-stage auto-classification (Platform × 9 Task Types) + 7-gate decision tree |
 | 🛡️ **Model Refusal in Security Audits** | Three-tier mitigation: `BLOCK_NONE` injection + transparent terminology mapping + cognitive redirection |
 | 📚 **Ephemeral Knowledge** | 294 technical field journals + 14 desensitized paradigms + "search KB before executing" enforced discipline |
-| 📦 **Setup Friction** | One-click `install.ps1` → supports Pi Agent, Claude Code, DeepSeek Harness (DSH), Codex / OpenCode |
+| 📦 **Setup Friction** | One-click `install.ps1` → dedicated paths for Pi Agent and DeepSeek Harness (DSH) |
 
 ---
 
@@ -148,7 +150,7 @@ The agent autonomously:
 - 🔄 **PoC Self-Healing Loop**: Frida error → root-cause mapping → auto-fix → re-execute (up to 3 attempts, then structured handoff)
 - 💎 **14 Industrial Architecture Paradigms**: Monolithic offline PE → multi-process IPC → VM arbitration → .NET keygen → weak RSA bypass → Java agent → .NET VM bypass *(fully desensitized, Projects A through N)*
 - 🌐 **Transport-Layer Compliance Relay & Auto-Retry**: Pure stdlib localhost relay with streaming refusal auto-retry cascade (`S1-review-checklist` → `S2-review-framed` → `S3-review-en`), preserving target paths without semantic drift. Unit tests 84/84 passing.
-- ⚡ **DeepSeek Harness (DSH) integration**: one-command idempotent mount into `$DSH_HOME/profiles/<p>/cordis.patch.yml` (`setup/dsh-merge.py`, backs up and keeps your own entries), with `toolCallTimeoutMs` set so long tasks are not cut off at DSH's 60 s default, and an end-to-end check that boots the server from DSH's own composed config (`setup/test_dsh_mount.py`).
+- ⚡ **DeepSeek Harness (DSH) integration**: `python setup/dsh-plugin-setup.py` installs a ~40 KB plugin package and writes the workbench path — the plugin mounts both MCP servers itself at runtime (`toolCallTimeoutMs` 900 s, since DSH's 60 s default cuts long tasks) plus the 10 skills, so moving the repo means editing one value. The `lab：` gate is now **code-enforced inside the plugin** (per-session, off by default; mentioning an APK does not activate it), and a **settings panel** (Settings → Seep 工作台) shows live status, lets you edit the path, and lists all 20 tools with their states. Verify with `python setup/verify-dsh.py` (6 groups / 21 items / 100 points).
 - 🛡️ **Measured Anti-Refusal Defense**: Gemini-safe prompt reshaping (`gemini-safe.flag`), L1 observable decision logging (`l1-log.flag`), and native `BLOCK_NONE` payload gating.
 - 🔌 **Offline-Ready**: All toolchains pre-bundled (251 MB), zero network dependencies after setup
 - 🪟 **Windows PE Deep-Dive Engine (`exe-reverse`)**: 41 gated references + **16 dependency-free Python engines** — `peutil` (RVA↔offset, imports/exports/TLS/relocs, MS checksum, per-section entropy), `pe_triage`, `pepatch` (equal-length + checksum recompute + **byte re-read from disk**), `aob_scan` (unique/ambiguous/permissive verdict), `pe_diff`, `hwprobe`, `trace_reduce` (+ optional SMT proof), `fold`. Covers packers, virtualization/flattening, .NET, Unity IL2CPP, packaged Python, kernel drivers, hardware tracing and hypervisor observation.
@@ -164,8 +166,6 @@ The agent autonomously:
 Seep\ (251 MB)
 ├── README.md                      ← This file (English default)
 ├── README.zh.md                   ← Chinese documentation (中文文档)
-├── CLAUDE.md                      ← Project-level instructions for Claude Code
-├── .mcp.json                      ← Project-level MCP registration (Claude Code / OpenCode)
 ├── DSH-PROFILE.md                 ← DeepSeek Harness: field reference, mounting, verification
 ├── check.bat                      ← ⭐ Double-click one-shot health verifier (Windows)
 ├── check.ps1                      ← PowerShell health verifier entry point
@@ -331,9 +331,7 @@ powershell -File setup\install-capabilities.ps1 -CheckOnly  # report only, no di
 | Agent | Instruction File | MCP Config | Setup Procedure |
 |---|---|---|---|
 | **Pi Agent** | `Tool/prompts/SYSTEM.md` | `~/.pi/agent/mcp.json` | `install.ps1` writes user configs & skills automatically. **Restart Pi** after installation. |
-| **Claude Code** | `CLAUDE.md` (project root) | `.mcp.json` (project root) | Run `powershell .\setup\generate-configs.ps1` to resolve paths, then launch `claude` in root. |
-| **DeepSeek Harness** | project-root `AGENTS.md` (generated) | `DSH-PROFILE.md` | `python setup/dsh-merge.py` mounts it idempotently into `cordis.patch.yml`; `dsh web --patch ...` works too. Verify with `python setup/test_dsh_mount.py`. |
-| **OpenCode / Codex** | `AGENTS.md` (project root) | `opencode.jsonc` | Generated by `setup\generate-configs.ps1` (compliant with official OpenCode `mcp` schema), launch `opencode` in root. |
+| **DeepSeek Harness** | project-root `AGENTS.md` (generated) | `DSH-PROFILE.md` | `python setup/dsh-plugin-setup.py` installs the bundle and writes the path (recommended); the older `dsh-merge.py` route is kept for compatibility. Verify with `python setup/verify-dsh.py`. |
 
 > 📖 **Comprehensive Multi-Agent Guide**: For detailed step-by-step setup, cross-platform caveats, and exhaustive troubleshooting FAQ, see [**MANUAL/DEPLOYMENT.md**](MANUAL/DEPLOYMENT.md).
 
@@ -347,6 +345,7 @@ Already deployed? No need to re-clone or copy files by hand. The updater is **id
 ```powershell
 # Windows
 powershell -ExecutionPolicy Bypass -File .\setup\update.ps1
+
 ```
 ```bash
 # Linux / macOS
