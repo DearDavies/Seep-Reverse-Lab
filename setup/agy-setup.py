@@ -344,38 +344,146 @@ def install_skills(root: Path, cfg_dir: Path, dry: bool) -> bool:
     return write_json(p, data, dry, "技能清单")
 
 
-def hooks_config(py: str, root: Path) -> dict:
-    """生成 hooks.json。python 用绝对路径 —— cmd/sh 里 PATH 上的 python 不可靠。"""
-    q = '"' + py.replace("\\", "/") + '"'
-    rel = root / ".agents"  # 钩子命令的工作目录就是 hooks.json 所在目录
-    del rel
+def probe_server(py: str, server_py: Path, timeout: int = 45) -> tuple[bool, str, list[str]]:
+    """真起一个 MCP 子进程，走 initialize + tools/list，把工具名拿回来。
+
+    为什么不用「看配置文件」代替：配置对不代表跑得起来。
+    缺依赖、路径写错、Python 装错，都只有真起一次才暴露。
+    用临时目录当工作目录跑，顺带证明「不依赖工作区」。
+    """
+    import subprocess
+    import tempfile
+
+    try:
+        proc = subprocess.Popen(
+            [py, str(server_py)],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            text=True, encoding="utf-8", errors="replace", bufsize=1,
+            cwd=tempfile.gettempdir(),
+        )
+    except OSError as exc:
+        return False, f"起不来：{exc}", []
+
+    def send(obj):
+        proc.stdin.write(json.dumps(obj) + "\n")
+        proc.stdin.flush()
+
+    try:
+        send({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+            "protocolVersion": "2024-11-05", "capabilities": {},
+            "clientInfo": {"name": "agy-setup-probe", "version": "1"}}})
+        first = proc.stdout.readline()
+        if not first.strip():
+            return False, "握手无响应（进程可能直接退出了）", []
+        hello = json.loads(first)
+        if "error" in hello:
+            return False, f"握手报错：{hello['error']}", []
+
+        send({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}})
+        send({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
+        data = json.loads(proc.stdout.readline())
+        names = [t.get("name", "?") for t in data.get("result", {}).get("tools", [])]
+        return True, "ok", names
+    except json.JSONDecodeError as exc:
+        return False, f"返回的不是 JSON：{exc}", []
+    except Exception as exc:  # noqa: BLE001
+        return False, f"探活失败：{exc}", []
+    finally:
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+
+
+def count_skill_files(root: Path) -> tuple[int, list[str]]:
+    """数 SKILL.md，并检查 frontmatter 里有没有 name / description。
+
+    agy 靠 description 决定要不要激活；缺了会被静默跳过 —— 所以这里必须查。
+    """
+    import re
+    roots = [root / "Tool" / "skill", root / "Tool" / "skill" / "safe-skills"]
+    total, broken = 0, []
+    for r in roots:
+        if not r.is_dir():
+            continue
+        for d in sorted(r.iterdir()):
+            sk = d / "SKILL.md"
+            if not (d.is_dir() and sk.is_file()):
+                continue
+            total += 1
+            text = sk.read_text(encoding="utf-8", errors="replace")
+            m = re.match(r"^---\s*\n(.*?)\n---", text, re.S)
+            if not m:
+                broken.append(f"{d.name}: 没有 frontmatter")
+                continue
+            fm = m.group(1)
+            if not re.search(r"^name:\s*\S", fm, re.M):
+                broken.append(f"{d.name}: 缺 name")
+            elif not re.search(r"^description:\s*\S", fm, re.M):
+                broken.append(f"{d.name}: 缺 description")
+    return total, broken
+
+
+
+def hooks_config(py: str, root: Path, scope: str) -> dict:
+    """生成 hooks.json。
+
+    scope="global"    → 写 ~/.gemini/config/hooks.json，任何工作区都会跑，
+                        命令里用脚本的绝对路径（cwd 是 config 目录，不是仓库）
+    scope="workspace" → 写 <仓库>/.agents/hooks.json，只在本仓库生效，
+                        命令里用相对路径（cwd 就是 .agents）
+    """
+    def q(p: str) -> str:
+        return '"' + p.replace("\\", "/") + '"'
+
+    hooks_dir = root / ".agents" / "hooks"
+    if scope == "global":
+        def script(name: str) -> str:
+            return f"{q(py)} {q(str(hooks_dir / name))}"
+    else:
+        def script(name: str) -> str:
+            return f"{q(py)} hooks/{name}"
+
     return {
         "seep-session-start": {
             "SessionStart": [
-                {"type": "command", "command": f"{q} hooks/session_start.py", "timeout": 20}
+                {"type": "command", "command": script("session_start.py"), "timeout": 20}
             ]
         },
         "seep-lab-gate": {
             "PreInvocation": [
-                {"type": "command", "command": f"{q} hooks/pre_invocation.py", "timeout": 20}
+                {"type": "command", "command": script("pre_invocation.py"), "timeout": 20}
             ]
         },
         "seep-audit-trail": {
             "PostToolUse": [
                 {"matcher": "*",
-                 "hooks": [{"type": "command", "command": f"{q} hooks/post_tool_use.py", "timeout": 20}]}
+                 "hooks": [{"type": "command", "command": script("post_tool_use.py"),
+                            "timeout": 20}]}
             ]
         },
     }
 
 
-def install_hooks(root: Path, py: str, dry: bool) -> bool:
-    """写 <仓库>/.agents/hooks.json（本仓库 = 工作区，agy 打开它就会读）。"""
-    agents = root / ".agents"
-    if not (agents / "hooks").is_dir():
-        warn(f"缺目录 {agents / 'hooks'}，跳过钩子")
+def install_hooks(root: Path, py: str, dry: bool, cfg_dir: Path,
+                  scope: str) -> bool:
+    """装钩子。默认全局（打开 agy 就能用），也可只装本仓库。"""
+    hooks_dir = root / ".agents" / "hooks"
+    if not hooks_dir.is_dir():
+        warn(f"缺目录 {hooks_dir}，跳过钩子")
         return False
-    return write_json(agents / "hooks.json", hooks_config(py, root), dry, "钩子配置")
+    if scope == "global":
+        target = cfg_dir / "hooks.json"
+        label = "全局钩子配置"
+        # 全局装的时候，别在本仓库再留一份，两边会重复注入
+        stale = root / ".agents" / "hooks.json"
+        if stale.is_file() and not dry:
+            stale.rename(root / ".agents" / "hooks.json.bak")
+            skip("把仓库内的 hooks.json 改名留档（避免和全局重复注入）")
+    else:
+        target = root / ".agents" / "hooks.json"
+        label = "仓库内钩子配置"
+    return write_json(target, hooks_config(py, root, scope), dry, label)
 
 
 def count_skills(root: Path) -> int:
@@ -394,6 +502,44 @@ def count_skills(root: Path) -> int:
 # -----------------------------------------------------------------------------
 # 现状
 # -----------------------------------------------------------------------------
+
+def run_probe(root: Path, agy: str | None, cfg_dir: Path) -> int:
+    """一条命令回答「到底能不能调」。只看配置没用，得真起一次。"""
+    step("Antigravity 可用性实探")
+    py = resolve_python()
+    if not py:
+        fail("找不到能 import mcp 的 python")
+        return 2
+    server = root / "Tool" / "mcp" / "seep_mcp_server.py"
+    print(f"  python : {py}")
+    print(f"  服务端 : {server}")
+
+    good, why, names = probe_server(py, server)
+    if good:
+        ok(f"seep MCP 起得来，拿到 {len(names)} 个工具")
+        print(f"      抽样：{', '.join(names[:6])}")
+    else:
+        fail(f"seep MCP 起不来：{why}")
+        print("      fix: powershell -File setup" + chr(92) + "install-python.ps1")
+
+    total, broken = count_skill_files(root)
+    if broken:
+        fail(f"技能 {total} 个，其中 {len(broken)} 个 frontmatter 有问题（agy 会静默跳过）")
+        for b in broken:
+            print(f"      - {b}")
+    else:
+        ok(f"技能 {total} 个，frontmatter 全合规（name + description 都在）")
+
+    mcp = (read_json(cfg_dir / "mcp_config.json").get("mcpServers") or {})
+    hooks = (cfg_dir / "hooks.json").is_file() or (root / ".agents" / "hooks.json").is_file()
+    print()
+    print(f"  MCP 已注册 : {len(mcp)} 个（{', '.join(sorted(mcp)) or '空'}）")
+    print(f"  技能清单   : {'已指向仓库' if (cfg_dir / 'skills.json').is_file() else '没有'}")
+    print(f"  钩子       : {'已装（lab： 可用）' if hooks else '没装'}")
+    print()
+    print("  以上都是真的起了一次进程拿到的，不是读配置猜的。")
+    return 0 if (good and not broken) else 1
+
 
 def show_status(root: Path, agy: str | None, cfg_dir: Path) -> None:
     step("现状")
@@ -445,8 +591,12 @@ def main() -> int:
     ap.add_argument("--ida-root", help="IDA 安装目录")
     ap.add_argument("--force", action="store_true", help="已存在的 server 也覆盖")
     ap.add_argument("--with-hooks", action="store_true",
-                    help="生成 .agents/hooks.json（lab 闸门 + 审计流水）")
-    ap.add_argument("--no-hooks", action="store_true", help="不生成钩子配置")
+                    help="装钩子（lab 闸门 + 审计流水）；默认装成全局，打开 agy 就能用")
+    ap.add_argument("--no-hooks", action="store_true", help="不装钩子")
+    ap.add_argument("--probe", action="store_true",
+                    help="真起一次 MCP 数工具，并检查技能能否被识别")
+    ap.add_argument("--hooks-scope", choices=("global", "workspace"), default="global",
+                    help="global=任何工作区都能用（默认）；workspace=只在这个仓库生效")
     args = ap.parse_args()
 
     root = repo_root(args.root)
@@ -457,6 +607,9 @@ def main() -> int:
         fail(f"这个目录不像 Seep 仓库：{root}")
         print("     用 --root <仓库路径> 指一下。")
         return 2
+
+    if args.probe:
+        return run_probe(root, agy, cfg_dir)
 
     if args.list:
         show_status(root, agy, cfg_dir)
@@ -502,10 +655,11 @@ def main() -> int:
     if args.no_hooks:
         skip("按 --no-hooks 跳过")
     elif args.with_hooks:
-        if install_hooks(root, py, args.dry_run):
-            ok("钩子已生成：lab 闸门 + 审计流水")
+        if install_hooks(root, py, args.dry_run, cfg_dir, args.hooks_scope):
+            where = "全局（任何工作区可用）" if args.hooks_scope == "global" else "仅本仓库"
+            ok(f"钩子已装：{where} —— lab 闸门 + 审计流水")
         else:
-            skip(".agents/hooks.json 已经是最新")
+            skip("钩子配置已经是最新")
     else:
         skip("没给 --with-hooks（想开 lab 闸门加这个参数）")
 
@@ -517,9 +671,14 @@ def main() -> int:
         print(f"    {cfg_dir / 'mcp_config.json'}")
         print(f"    {cfg_dir / 'skills.json'}")
         if args.with_hooks:
-            print(f"    {root / '.agents' / 'hooks.json'}")
+            target = (cfg_dir if args.hooks_scope == "global" else root / ".agents") / "hooks.json"
+            print(f"    {target}")
     print()
     if args.with_hooks:
+        if args.hooks_scope == "global":
+            print("  钩子是全局的：打开 agy、随便哪个工作区，发 lab： 都能用")
+        else:
+            print("  钩子只在本仓库生效：得用 agy 打开这个仓库才会触发")
         print("  lab 模式：在 agy 输入框里单独发一句 lab： 打开，退出实验 关闭")
         print("  审计流水：~/.seep/agy-audit.jsonl（一行一条，tail -f 可看）")
         print()

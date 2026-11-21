@@ -205,9 +205,12 @@ Antigravity 是 Google 的 Agent IDE（VS Code 派生）。它认三种定制：
 | **规则**（`AGENTS.md`） | 仓库根，已经有了 | agy 自己会自动向上找到，**零配置** |
 | **技能清单** | `~/.gemini/config/skills.json` | `agy-setup.py` 写 |
 | **MCP 服务** | `~/.gemini/config/mcp_config.json` | `agy-setup.py` 写（优先走 `agy mcp add`）|
-| **钩子**（可选） | `<仓库>/.agents/hooks.json` | `agy-setup.py --with-hooks` 生成 |
+| **钩子** | `~/.gemini/config/hooks.json`（全局） | `agy-setup.py --with-hooks` 生成 |
 
 **不动 Antigravity 的用户设置和模型配置。** 只写上面这三处。
+
+> **钩子默认装成全局**，因为规则/技能/MCP 都是全局的，钩子如果只装在仓库里，
+> 你换了工作区就失效。全局装的效果是：**打开 agy、不管在哪个项目，发 `lab：` 都能用**。
 
 ### 怎么装
 
@@ -231,6 +234,22 @@ python setup/agy-setup.py --force             # 覆盖已存在的同名 server
 > **你已有的 MCP 条目不会被删。** 脚本只做「加」，同名条目默认跳过（保住你自己加的参数，
 > 比如 playwright 的扩展 token）。要覆盖才加 `--force`。
 
+### 钩子：为什么装全局
+
+| 装法 | 命令 | 什么时候生效 |
+| :--- | :--- | :--- |
+| **全局（默认）** | `--with-hooks` | 打开 agy 就能用，任何工作区 |
+| 仅本仓库 | `--with-hooks --hooks-scope workspace` | 只有用 agy 打开这个仓库才生效 |
+
+**全局不会污染别的项目**，钩子自己分得清：
+
+| 你在哪 | 开场说什么 | `lab：` | 审计流水 |
+| :--- | :--- | :--- | :--- |
+| 本仓库 | 完整说明（工具/技能/授权范围） | 纪律 + 术语表 + 授权范围 | 记 |
+| 别的项目 | 一句「Seep 工具可用，要开工发 lab：」 | 纪律 + 术语表（**不贴本仓库工单**） | lab 开了才记 |
+
+也就是说：**不开 lab 就等于不存在**，别的项目里你感觉不到它。
+
 ### 钩子：lab 闸门怎么补上的
 
 agy 本身没有运行时改写钩子，但它有**生命周期钩子**（`SessionStart` / `PreInvocation` /
@@ -253,7 +272,24 @@ agy 本身没有运行时改写钩子，但它有**生命周期钩子**（`Sessi
 也就是说：agy 这边用户的字还是用户说的，我们只是**补充上下文**。
 想真替换措辞，得用 pi 或 DSH。
 
-**怎么确认真的生效**（三段，从离线到线上）：
+**一条命令回答「到底能不能调」：**
+
+```bash
+python setup/agy-setup.py --probe
+```
+
+它不看配置，**真起一次 MCP 进程**走完握手数工具，再逐个检查 10 个技能的
+frontmatter（agy 靠 `description` 决定要不要激活，缺了会被静默跳过）。期望：
+
+```
+  [ok] seep MCP 起得来，拿到 38 个工具
+  [ok] 技能 10 个，frontmatter 全合规（name + description 都在）
+  MCP 已注册 : 4 个（ida, js-reverse, playwright, seep）
+  技能清单   : 已指向仓库
+  钩子       : 已装（lab： 可用）
+```
+
+**怎么确认钩子真的生效**（三段，从离线到线上）：
 
 ```bash
 # ① 离线自检：钩子脚本本身对不对（不用开 agy）
@@ -305,7 +341,7 @@ tail -f ~/.seep/agy-audit.jsonl
 
 一行一条：时间、会话、工具名、参数摘要（大字段只存 sha256，不会把整个 APK 写进日志）、成功与否。
 
-**关掉钩子**：删掉 `.agents/hooks.json`，或把里面某一段的 `"enabled"` 设成 `false`。
+**关掉钩子**：删掉 `~/.gemini/config/hooks.json`，或把里面某一段的 `"enabled"` 设成 `false`。
 
 ### 怎么验
 
